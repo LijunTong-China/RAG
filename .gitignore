@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 数据产物与大文件：全部不入库，仅保留人工维护的对照表
+data/*
+!data/manifests/
+data/manifests/*
+!data/manifests/file_manifest.csv
+
+# 配置含明文 MinerU API key，暂不入库（改成环境变量读取后可移除此行）
+config/pipeline_config.json
+
+# Docker 数据卷（Milvus/etcd/minio 运行时数据），docker-compose.yml 保留入库
+deploy/volumes/
+
+# 编辑器/系统
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
