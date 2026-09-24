@@ -111,8 +111,13 @@ def get_llm_client(cfg):
     return OpenAI(base_url=cfg_get(cfg, "llm.base_url"), api_key=key)
 
 
-def llm_chat(cfg, client, system, user, response_format=None):
-    """response_format 可选（如 {"type": "json_object"}）；不支持时由 API 报错暴露，不静默降级。"""
+def llm_chat(cfg, client, system, user, response_format=None, on_delta=None):
+    """LLM 对话，流式接收。
+
+    - response_format 可选（如 {"type": "json_object"}）；不支持时由 API 报错暴露，不静默降级；
+    - on_delta(delta_text) 可选：每收到一段生成增量就回调一次（控制台不打印，
+      Web 服务经此把生成过程以 thinking 形式实时推给前端；离线脚本不传则行为同非流式）。
+    """
     model = cfg_get(cfg, "llm.model")
     temperature = cfg_get(cfg, "llm.temperature")
     max_retries = int(cfg_get(cfg, "llm.max_retries"))
@@ -121,14 +126,24 @@ def llm_chat(cfg, client, system, user, response_format=None):
     for attempt in range(1, max_retries + 1):
         try:
             kwargs = {"response_format": response_format} if response_format else {}
-            resp = client.chat.completions.create(
+            stream = client.chat.completions.create(
                 model=model,
                 temperature=temperature,
                 messages=[{"role": "system", "content": system},
                           {"role": "user", "content": user}],
+                stream=True,
                 **kwargs,
             )
-            return resp.choices[0].message.content
+            parts = []
+            for chunk in stream:
+                delta = (chunk.choices[0].delta.content
+                         if chunk.choices and chunk.choices[0].delta else None)
+                if not delta:
+                    continue
+                parts.append(delta)
+                if on_delta:
+                    on_delta(delta)
+            return "".join(parts)
         except Exception as e:
             last_err = e
             if attempt < max_retries:

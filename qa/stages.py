@@ -23,7 +23,8 @@ def _repair_json(cfg, original_system, bad_text, err):
             "下面是需要你格式化为合法JSON的LLM原始输出（解析错误: %s）：\n\"\"\"\n%s\n\"\"\""
             % (original_system[:6000], err, bad_text))
     client = get_llm_client(cfg)
-    raw = llm_chat(cfg, client, system, user)
+    raw = llm_chat(cfg, client, system, user,
+                   on_delta=lambda d: steplog.emit_delta(d, label="P0_json_repair"))
     return parse_json_strict(raw)
 
 
@@ -43,7 +44,8 @@ def _call_json(cfg, prompt_name, user_content, validator=None, **vars):
     for attempt in range(1, max_retries + 1):
         attempts = attempt
         raw = llm_chat(cfg, client, system, user_content,
-                       response_format={"type": "json_object"})
+                       response_format={"type": "json_object"},
+                       on_delta=lambda d: steplog.emit_delta(d, label=prompt_name))
         try:
             out = parse_json_strict(raw)
             if validator:
@@ -83,7 +85,8 @@ def compress_memory(cfg, old_summary, texts):
     template = load_prompt(cfg, "P2_memory_compress")
     client = get_llm_client(cfg)
     t0 = time.time()
-    out = llm_chat(cfg, client, template, user).strip()
+    out = llm_chat(cfg, client, template, user,
+                   on_delta=lambda d: steplog.emit_delta(d, label="P2_memory_compress")).strip()
     steplog.llm_call("P2_memory_compress", time.time() - t0, 1, 0)
     return out
 

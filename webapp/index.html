@@ -5,19 +5,46 @@
 <title>财报问答助手</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  :root { --bg:#f5f6f8; --card:#fff; --accent:#2b5cff; --muted:#8a8f99; }
+  :root { --bg:#f5f6f8; --card:#fff; --accent:#2b5cff; --muted:#8a8f99; --line:#e5e7eb; }
   * { box-sizing:border-box; margin:0; padding:0; }
   body { font-family:"Microsoft YaHei",system-ui,sans-serif; background:var(--bg); height:100vh; display:flex; flex-direction:column; }
-  header { background:var(--card); border-bottom:1px solid #e5e7eb; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; }
+  header { background:var(--card); border-bottom:1px solid var(--line); padding:12px 20px; display:flex; justify-content:space-between; align-items:center; }
   header h1 { font-size:16px; }
   header button { border:1px solid #d0d3d9; background:#fff; border-radius:6px; padding:6px 14px; cursor:pointer; }
   #chat { flex:1; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:14px; }
-  .msg { max-width:80%; padding:10px 14px; border-radius:10px; line-height:1.6; white-space:pre-wrap; word-break:break-word; }
+  .msg { max-width:86%; padding:10px 14px; border-radius:10px; line-height:1.6; white-space:pre-wrap; word-break:break-word; }
   .user { align-self:flex-end; background:var(--accent); color:#fff; }
-  .bot { align-self:flex-start; background:var(--card); border:1px solid #e5e7eb; }
+  .bot { align-self:flex-start; background:var(--card); border:1px solid var(--line); }
   .bot.insufficient { border-color:#f0b26b; background:#fff8ee; }
   .sources { margin-top:8px; padding-top:8px; border-top:1px dashed #e0e0e0; font-size:12px; color:var(--muted); }
-  #bar { display:flex; gap:10px; padding:12px 20px; background:var(--card); border-top:1px solid #e5e7eb; }
+
+  /* 流程进度 */
+  .steps { margin:2px 0 8px; font-size:13px; }
+  .step { display:flex; align-items:center; gap:8px; padding:3px 0; color:#444; }
+  .step .ic { width:16px; height:16px; flex:none; display:flex; align-items:center; justify-content:center; }
+  .step.done .ic::after { content:"✓"; color:#2a9d4f; font-size:13px; }
+  .step.active { color:var(--accent); }
+  .step .t { flex:1; }
+  .step .sec { font-size:11px; color:var(--muted); }
+  .spinner { width:13px; height:13px; border:2px solid #dfe3ea; border-top-color:var(--accent); border-radius:50%; animation:spin .7s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+
+  /* thinking 面板 */
+  details.think { margin:4px 0 8px; border:1px solid var(--line); border-radius:8px; background:#fafbfc; }
+  details.think summary { cursor:pointer; padding:6px 10px; font-size:12px; color:var(--muted); user-select:none; }
+  details.think .body { padding:0 10px 8px; font-size:12px; color:#556; white-space:pre-wrap; word-break:break-word;
+                        max-height:260px; overflow-y:auto; font-family:Consolas,monospace; line-height:1.5; }
+  details.think .lbl { color:var(--accent); font-weight:bold; }
+
+  /* 等待动画（thinking 后台未产出内容时） */
+  .dots { display:inline-flex; gap:4px; align-items:center; padding:4px 0; }
+  .dots i { width:6px; height:6px; border-radius:50%; background:var(--muted); animation:blink 1.2s infinite; }
+  .dots i:nth-child(2) { animation-delay:.2s; }
+  .dots i:nth-child(3) { animation-delay:.4s; }
+  @keyframes blink { 0%,80%,100% { opacity:.2; } 40% { opacity:1; } }
+  .wait { font-size:12px; color:var(--muted); display:flex; gap:8px; align-items:center; }
+
+  #bar { display:flex; gap:10px; padding:12px 20px; background:var(--card); border-top:1px solid var(--line); }
   #input { flex:1; resize:none; height:52px; border:1px solid #d0d3d9; border-radius:8px; padding:10px; font-size:14px; }
   #send { width:80px; border:0; background:var(--accent); color:#fff; border-radius:8px; cursor:pointer; }
   #send:disabled { opacity:.5; }
@@ -39,18 +66,25 @@ const chat = document.getElementById('chat');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
 
+function el(tag, cls, text) {
+  const d = document.createElement(tag);
+  if (cls) d.className = cls;
+  if (text !== undefined) d.textContent = text;
+  return d;
+}
+function scroll() { chat.scrollTop = chat.scrollHeight; }
+
 function addMsg(cls, text, sources, insufficient) {
-  const div = document.createElement('div');
-  div.className = 'msg ' + cls + (insufficient ? ' insufficient' : '');
+  const div = el('div', 'msg ' + cls + (insufficient ? ' insufficient' : ''));
   div.textContent = text;
   if (sources && sources.length) {
-    const s = document.createElement('div');
-    s.className = 'sources';
-    s.textContent = '来源：' + sources.map(x => `${x.report_name} P${x.page}`).join('；');
+    const s = el('div', 'sources',
+      '来源：' + sources.map(x => `${x.report_name} P${x.page}`).join('；'));
     div.appendChild(s);
   }
   chat.appendChild(div);
-  chat.scrollTop = chat.scrollHeight;
+  scroll();
+  return div;
 }
 
 async function newSession() {
@@ -61,23 +95,131 @@ async function newSession() {
   addMsg('bot', '新对话已创建。请提问财报相关问题～');
 }
 
+/* ---------- 流式问答 ---------- */
+
+let current = null;   // 本轮的 UI 容器引用
+
+function newTurn() {
+  const box = el('div', 'msg bot');
+  const wait = el('div', 'wait');
+  wait.appendChild(el('span', 'dots'));
+  wait.appendChild(el('span', '', '思考中…'));
+  const steps = el('div', 'steps');
+  const think = el('details', 'think');
+  think.open = true;
+  think.appendChild(el('summary', '', '💭 thinking 过程（点击收起）'));
+  const tbody = el('div', 'body');
+  think.appendChild(tbody);
+  think.style.display = 'none';
+  steps.style.display = 'none';
+  box.appendChild(wait);
+  box.appendChild(steps);
+  box.appendChild(think);
+  chat.appendChild(box);
+  scroll();
+  current = {box, wait, steps, think, tbody, lastLabel: null};
+}
+
+function stepRow(no, title) {
+  const {steps} = current;
+  let row = steps.querySelector(`[data-no="${no}"]`);
+  if (row) return row;
+  row = el('div', 'step active');
+  row.dataset.no = no;
+  const ic = el('span', 'ic');
+  ic.appendChild(el('span', 'spinner'));
+  row.appendChild(ic);
+  row.appendChild(el('span', 't', title));
+  row.appendChild(el('span', 'sec', ''));
+  steps.appendChild(row);
+  steps.style.display = '';
+  scroll();
+  return row;
+}
+
+function handle(ev) {
+  const c = current;
+  if (ev.type === 'stage_start') {
+    stepRow(ev.no, ev.title);
+  } else if (ev.type === 'stage_end') {
+    const row = stepRow(ev.no, ev.title);
+    row.className = 'step done';
+    row.querySelector('.ic').textContent = '';
+    row.querySelector('.sec').textContent = ev.seconds + 's';
+    scroll();
+  } else if (ev.type === 'note') {
+    c.tbody.appendChild(document.createTextNode('\n· ' + ev.text));
+    c.tbody.scrollTop = c.tbody.scrollHeight;
+  } else if (ev.type === 'llm') {
+    c.tbody.appendChild(document.createTextNode(
+      `\n⏱ LLM ${ev.prompt} 耗时 ${ev.seconds}s（尝试${ev.attempts}/修复${ev.repairs}）`));
+    c.tbody.scrollTop = c.tbody.scrollHeight;
+  } else if (ev.type === 'delta') {
+    c.think.style.display = '';
+    if (ev.label && ev.label !== c.lastLabel) {
+      const l = el('span', 'lbl', `\n〔${ev.label}〕`);
+      c.tbody.appendChild(l);
+      c.lastLabel = ev.label;
+    }
+    c.tbody.appendChild(document.createTextNode(ev.text));
+    c.tbody.scrollTop = c.tbody.scrollHeight;
+    const w = c.box.querySelector('.wait');
+    if (w) { w.remove(); }
+  } else if (ev.type === 'done') {
+    finish();
+    const div = addMsg('bot', ev.reply, ev.sources, ev.insufficient);
+    if (!ev.insufficient && div) div.classList.remove('insufficient');
+  } else if (ev.type === 'error') {
+    finish();
+    addMsg('bot', '⚠ 出错：' + ev.message);
+  }
+}
+
+function finish() {
+  const c = current;
+  const w = c.box.querySelector('.wait');
+  if (w) w.remove();
+  c.think.open = false;           // 完成后收起 thinking，答案为主体
+  current = null;
+}
+
 async function send() {
   const msg = input.value.trim();
   if (!msg || !sessionId) return;
   addMsg('user', msg);
   input.value = '';
   sendBtn.disabled = true;
+  newTurn();
   try {
-    const r = await fetch('/api/chat', {
+    const r = await fetch('/api/chat/stream', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({session_id: sessionId, message: msg})
     });
-    if (r.status === 404) { addMsg('bot', '会话已过期，正在新建会话，请重发问题。'); await newSession(); return; }
-    const d = await r.json();
-    addMsg('bot', d.reply, d.sources, d.insufficient);
+    if (r.status === 404) {
+      finish(); current = null;
+      addMsg('bot', '会话已过期，正在新建会话，请重发问题。');
+      await newSession(); return;
+    }
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream:true});
+      let i;
+      while ((i = buf.indexOf('\n\n')) >= 0) {
+        const chunk = buf.slice(0, i); buf = buf.slice(i + 2);
+        if (chunk.startsWith('data: ')) {
+          try { handle(JSON.parse(chunk.slice(6))); } catch (e) {}
+        }
+      }
+    }
   } catch (e) {
+    if (current) { finish(); }
     addMsg('bot', '请求失败：' + e.message);
   } finally {
+    if (current) finish();
     sendBtn.disabled = false;
   }
 }

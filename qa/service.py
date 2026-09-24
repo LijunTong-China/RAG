@@ -67,6 +67,52 @@ def _create_app():
         with s.lock:  # 同会话串行，避免记忆压缩与问答交错
             return svc.answer(s, body.message)
 
+    @app.post("/api/chat/stream")
+    def chat_stream(body: ChatIn):
+        """SSE 流式问答：实时推送 流程进度(stage_*) / thinking 增量(delta) /
+        行内提示(note) / LLM 耗时(llm)，结束时推 done（完整结果）或 error。"""
+        import json as _json
+        import queue as _queue
+        import threading as _threading
+        from fastapi.responses import StreamingResponse
+        import steplog
+
+        s = svc.store.get(body.session_id)
+        if s is None:
+            raise HTTPException(404, "会话不存在或已过期，请新建会话")
+        q = _queue.Queue()
+
+        def _emitter(ev):
+            q.put(ev)
+
+        def _run():
+            try:
+                steplog.set_emitter(_emitter)
+                with s.lock:  # 同会话串行，与 /api/chat 一致
+                    result = svc.answer(s, body.message)
+                q.put({"type": "done", "reply": result["reply"],
+                       "sources": result["sources"],
+                       "insufficient": result["insufficient"],
+                       "elapsed_ms": result["elapsed_ms"]})
+            except Exception as e:
+                q.put({"type": "error", "message": str(e)})
+            finally:
+                steplog.set_emitter(None)
+                q.put(None)  # 结束哨兵
+
+        _threading.Thread(target=_run, daemon=True).start()
+
+        def _gen():
+            while True:
+                ev = q.get()
+                if ev is None:
+                    break
+                yield "data: " + _json.dumps(ev, ensure_ascii=False) + "\n\n"
+
+        return StreamingResponse(_gen(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache",
+                                          "X-Accel-Buffering": "no"})
+
     @app.post("/api/session/close")
     def session_close(body: CloseIn):
         svc.store.close(body.session_id)

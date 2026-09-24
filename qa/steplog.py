@@ -30,6 +30,28 @@ _no = 0
 _steps = []       # [{no, title, seconds}]
 _llm_calls = []   # [{prompt, seconds, attempts, repairs}]
 _tls = threading.local()  # 每线程当前步骤标题（Map 子任务并行时互不串号）
+_emitter = None   # 事件发射器（service 订阅后推给前端 SSE），None = 不发射
+
+
+def set_emitter(fn):
+    """注册/清除事件发射器；fn(event_dict)。单用户场景，全局单订阅者。"""
+    global _emitter
+    _emitter = fn
+
+
+def emit(type, **data):
+    """向订阅者发射事件；发射失败静默（不能影响主流程）。"""
+    fn = _emitter
+    if fn:
+        try:
+            fn({"type": type, **data})
+        except Exception:
+            pass
+
+
+def emit_delta(text, label=None):
+    """LLM 流式增量事件（thinking 展示）。"""
+    emit("delta", text=text, label=label)
 
 
 def reset():
@@ -59,6 +81,7 @@ def step(title, inputs=None):
     global _no
     _no += 1
     _tls.no, _tls.title = _no, title
+    emit("stage_start", no=_no, title=title)
     print("\n╔" + "═" * _WIDTH)
     print("║ ★★★ 步骤[%d] %s" % (_no, title))
     print("╚" + "═" * _WIDTH)
@@ -74,6 +97,7 @@ def done(t0, output=None):
     secs = time.time() - t0
     if getattr(_tls, "title", None):
         _steps.append({"no": _tls.no, "title": _tls.title, "seconds": round(secs, 3)})
+        emit("stage_end", no=_tls.no, title=_tls.title, seconds=round(secs, 3))
         _tls.title = None
     print("  【输出】(耗时 %.1fs)" % secs)
     if output is not None:
@@ -84,6 +108,7 @@ def done(t0, output=None):
 
 def note(text):
     """步骤内的行内提示（不占步骤号）。"""
+    emit("note", text=text)
     print("  · " + text)
     sys.stdout.flush()
 
@@ -92,6 +117,8 @@ def llm_call(prompt, seconds, attempts, repairs):
     """上报一次结构化 LLM 调用的耗时（stages._call_json 调用）。"""
     _llm_calls.append({"prompt": prompt, "seconds": round(seconds, 3),
                        "attempts": attempts, "repairs": repairs})
+    emit("llm", prompt=prompt, seconds=round(seconds, 3),
+         attempts=attempts, repairs=repairs)
     print("  ⏱ LLM %s 耗时 %.1fs（尝试 %d 次，修复旁路 %d 次）"
           % (prompt, seconds, attempts, repairs))
     sys.stdout.flush()
